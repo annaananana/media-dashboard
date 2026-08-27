@@ -195,16 +195,27 @@ table.dt tbody tr:hover .rkchg{visibility:visible}
 #__lock .lockttl{font-size:17px;font-weight:700;color:#0F172A;margin-bottom:6px;}
 #__lock .locksub{font-size:13px;color:#6B7280;margin-bottom:20px;line-height:1.5;}
 #__lock .lockrow{display:flex;gap:8px;}
-#__lock input{flex:1;min-width:0;height:40px;padding:0 12px;font-size:14px;border:1px solid #D1D5DB;
+#__lock input[type=password]{flex:1;min-width:0;height:40px;padding:0 12px;font-size:14px;border:1px solid #D1D5DB;
   border-radius:8px;outline:none;background:#fff;color:#0F172A;}
-#__lock input:focus{border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.12);}
+#__lock input[type=password]:focus{border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.12);}
 #__lock button{height:40px;padding:0 18px;font-size:14px;font-weight:600;color:#fff;background:#2563EB;
   border:0;border-radius:8px;cursor:pointer;white-space:nowrap;}
 #__lock button:hover:not(:disabled){background:#1D4ED8;}
 #__lock button:disabled{background:#93B4F5;cursor:default;}
 #__lock .lockmsg{display:none;margin-top:12px;font-size:13px;color:#C0392B;line-height:1.5;}
+#__lock .lockopt{display:flex;align-items:center;justify-content:center;gap:7px;margin-top:15px;
+  font-size:12.5px;color:#6B7280;}
+#__lock .lockopt input{width:14px;height:14px;flex:none;accent-color:#2563EB;cursor:pointer;margin:0;}
+#__lock .lockopt label{cursor:pointer;user-select:none;}
 #__lock .lockfoot{margin-top:22px;padding-top:16px;border-top:1px solid #F1F5F9;
   font-size:11px;color:#9CA3AF;line-height:1.6;}
+#__lock .spin{display:inline-block;width:13px;height:13px;margin-right:7px;vertical-align:-2px;
+  border:2px solid #C7D2FE;border-top-color:#2563EB;border-radius:50%;animation:__sp .7s linear infinite;}
+@keyframes __sp{to{transform:rotate(360deg)}}
+#__relock{position:fixed;right:14px;bottom:14px;z-index:99998;height:30px;padding:0 13px;border-radius:15px;
+  border:1px solid #E5E7EB;background:rgba(255,255,255,.93);color:#9CA3AF;font-size:12px;cursor:pointer;
+  box-shadow:0 2px 8px rgba(15,23,42,.08);font-family:inherit;}
+#__relock:hover{color:#0F172A;border-color:#CBD5E1;background:#fff;}
 </style>
 </head>
 <body>
@@ -2117,10 +2128,33 @@ function renderTab3(){ if(!t3built){ buildT3(); t3built=true; } paintT3(); }
 <script>
 (function(){
   var ITER = 310000;
+  var KEY  = "adpopcorn_dashboard_pw";
+  var TTL  = 30*24*60*60*1000;          /* 저장 유효기간 30일 */
+
   var payEl = document.getElementById("__pay");
-  var b64 = payEl.textContent.replace(/\s+/g, "");
+  var b64   = payEl.textContent.replace(/\s+/g, "");
   payEl.remove();
 
+  /* ---------- 저장소 (브라우저 설정에 따라 막힐 수 있어 전부 try 로 감싼다) ---------- */
+  function pwSave(pw){ try{ localStorage.setItem(KEY, JSON.stringify({p:pw,t:Date.now()})); }catch(e){} }
+  function pwClear(){ try{ localStorage.removeItem(KEY); }catch(e){} }
+  function pwLoad(){
+    try{
+      var o = JSON.parse(localStorage.getItem(KEY) || "null");
+      if (o && typeof o.p === "string" && (Date.now() - o.t) < TTL) return o.p;
+      pwClear();
+    }catch(e){}
+    return null;
+  }
+  /* 주소 끝에 #forget 을 붙여 열면 저장된 비밀번호를 지운다.
+     이미 열려 있는 화면에서 주소창에 #forget 만 덧붙이면 브라우저가 문서를 다시 읽지 않으므로
+     hashchange 도 함께 처리한다. */
+  if ((location.hash + location.search).indexOf("forget") >= 0) pwClear();
+  window.addEventListener("hashchange", function(){
+    if (location.hash.indexOf("forget") >= 0) { pwClear(); location.reload(); }
+  });
+
+  /* ---------- 잠금 화면 ---------- */
   var ov = document.createElement("div");
   ov.id = "__lock";
   ov.innerHTML =
@@ -2132,68 +2166,107 @@ function renderTab3(){ if(!t3built){ buildT3(); t3built=true; } paintT3(); }
         '<button id="__go" type="button">열기</button>' +
       '</div>' +
       '<div id="__msg" class="lockmsg"></div>' +
-      '<div class="lockfoot">데이터는 이 파일 안에 AES-256으로 암호화되어 있습니다.<br>비밀번호 없이는 어떤 수치도 열람할 수 없습니다.</div>' +
+      '<div class="lockopt">' +
+        '<input id="__rm" type="checkbox" checked>' +
+        '<label for="__rm">이 브라우저에서 다음에도 자동으로 열기</label>' +
+      '</div>' +
+      '<div class="lockfoot">데이터는 이 파일 안에 AES-256으로 암호화되어 있습니다.<br>' +
+        '비밀번호 없이는 어떤 수치도 열람할 수 없습니다.</div>' +
     '</div>';
   document.body.appendChild(ov);
 
   var pw  = ov.querySelector("#__pw"),
       btn = ov.querySelector("#__go"),
-      msg = ov.querySelector("#__msg");
+      msg = ov.querySelector("#__msg"),
+      rm  = ov.querySelector("#__rm");
 
   function b64buf(s){
     var bin = atob(s), n = bin.length, u = new Uint8Array(n);
     for (var i = 0; i < n; i++) u[i] = bin.charCodeAt(i);
     return u;
   }
+  function busy(on, label){
+    btn.disabled = on;
+    btn.innerHTML = on ? '<span class="spin"></span>' + (label || "여는 중…") : "열기";
+  }
   function fail(text){
-    btn.disabled = false; btn.textContent = "열기";
-    msg.textContent = text; msg.style.display = "block";
+    busy(false);
+    msg.textContent = text;
+    msg.style.display = "block";
   }
 
-  function unlock(){
-    if (btn.disabled) return;
-    if (!pw.value){ fail("비밀번호를 입력해 주세요."); return; }
+  /* ---------- 복호화: base64 → AES-256-GCM 해제 → gzip 해제 → JSON ---------- */
+  async function decrypt(password){
+    if (!(window.crypto && window.crypto.subtle)) throw new Error("NOSUBTLE");
+    if (typeof DecompressionStream === "undefined") throw new Error("NOGZIP");
+    var raw  = b64buf(b64);
+    var salt = raw.slice(0, 16), iv = raw.slice(16, 28), ct = raw.slice(28);
+    var km  = await crypto.subtle.importKey("raw", new TextEncoder().encode(password),
+                                            "PBKDF2", false, ["deriveKey"]);
+    var key = await crypto.subtle.deriveKey(
+      { name:"PBKDF2", salt:salt, iterations:ITER, hash:"SHA-256" },
+      km, { name:"AES-GCM", length:256 }, false, ["decrypt"]);
+    var plain  = await crypto.subtle.decrypt({ name:"AES-GCM", iv:iv }, key, ct);
+    var stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return JSON.parse(await new Response(stream).text());
+  }
+
+  /* ---------- 잠금 해제 후 ---------- */
+  function open_(data, remembered){
+    window.DATA = data;
+    b64 = null;
+    ov.remove();
+    window.__APP();
+    if (remembered) addRelock();
+  }
+
+  function addRelock(){
+    if (document.getElementById("__relock")) return;
+    var b = document.createElement("button");
+    b.id = "__relock";
+    b.type = "button";
+    b.textContent = "🔒 비밀번호 기억 지우기";
+    b.title = "이 브라우저에 저장된 비밀번호를 지우고 다시 잠급니다";
+    b.onclick = function(){ pwClear(); location.reload(); };
+    document.body.appendChild(b);
+  }
+
+  function unlock(password, remember, viaSaved){
+    busy(true, viaSaved ? "저장된 비밀번호로 여는 중…" : "여는 중…");
     msg.style.display = "none";
-    btn.disabled = true; btn.textContent = "여는 중…";
-
-    /* 브라우저가 화면을 한 번 그린 뒤에 무거운 복호화를 시작하도록 미룬다 */
+    /* 화면을 한 번 그린 뒤에 무거운 복호화를 시작한다 */
     setTimeout(function(){
-      (async function(){
-        if (!(window.crypto && window.crypto.subtle)) throw new Error("NOSUBTLE");
-        if (typeof DecompressionStream === "undefined") throw new Error("NOGZIP");
-
-        var raw  = b64buf(b64);
-        var salt = raw.slice(0, 16);
-        var iv   = raw.slice(16, 28);
-        var ct   = raw.slice(28);
-
-        var km = await crypto.subtle.importKey(
-          "raw", new TextEncoder().encode(pw.value), "PBKDF2", false, ["deriveKey"]);
-        var key = await crypto.subtle.deriveKey(
-          { name:"PBKDF2", salt:salt, iterations:ITER, hash:"SHA-256" },
-          km, { name:"AES-GCM", length:256 }, false, ["decrypt"]);
-        var plain = await crypto.subtle.decrypt({ name:"AES-GCM", iv:iv }, key, ct);
-
-        var stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("gzip"));
-        var json = await new Response(stream).text();
-
-        window.DATA = JSON.parse(json);
-        b64 = null;
-        ov.remove();
-        window.__APP();
-      })().catch(function(e){
+      decrypt(password).then(function(data){
+        if (remember) pwSave(password); else pwClear();
+        open_(data, remember);
+      }).catch(function(e){
         var m = e && e.message;
-        if (m === "NOSUBTLE" || m === "NOGZIP")
+        if (m === "NOSUBTLE" || m === "NOGZIP") {
           fail("이 브라우저에서는 열 수 없습니다. Chrome 또는 Edge 최신 버전에서 열어 주세요.");
-        else { fail("비밀번호가 올바르지 않습니다."); pw.select(); }
+        } else if (viaSaved) {
+          /* 저장된 비밀번호가 더는 맞지 않음(비밀번호가 바뀐 경우) */
+          pwClear();
+          fail("저장된 비밀번호가 더 이상 맞지 않습니다. 새 비밀번호를 입력해 주세요.");
+          pw.value = ""; pw.focus();
+        } else {
+          fail("비밀번호가 올바르지 않습니다.");
+          pw.select();
+        }
       });
     }, 30);
   }
 
-  btn.addEventListener("click", unlock);
-  pw.addEventListener("keydown", function(e){ if (e.key === "Enter") unlock(); });
-  window.addEventListener("load", function(){ pw.focus(); });
-  pw.focus();
+  btn.addEventListener("click", function(){
+    if (btn.disabled) return;
+    if (!pw.value) { fail("비밀번호를 입력해 주세요."); return; }
+    unlock(pw.value, rm.checked, false);
+  });
+  pw.addEventListener("keydown", function(e){ if (e.key === "Enter") btn.click(); });
+
+  /* ---------- 저장된 비밀번호가 있으면 바로 열기 ---------- */
+  var saved = pwLoad();
+  if (saved) unlock(saved, true, true);
+  else pw.focus();
 })();
 </script>
 </body>
